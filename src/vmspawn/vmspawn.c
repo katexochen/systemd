@@ -1307,6 +1307,117 @@ fallback:
         return sd_event_exit(sd_event_source_get_event(s), 0);
 }
 
+typedef struct QemuStderrCapture {
+        int read_fd;            /* owned read end of the pipe; -EBADF if not initialized */
+        char *partial;          /* accumulator for a line spanning multiple reads */
+        size_t partial_len;
+} QemuStderrCapture;
+
+#define QEMU_STDERR_CAPTURE_INIT { .read_fd = -EBADF }
+
+static int qemu_stderr_capture_log_line(QemuStderrCapture *c, const char *line, size_t len) {
+        assert(c);
+        assert(line || len == 0);
+
+        if (c->partial_len > 0) {
+                if (!GREEDY_REALLOC(c->partial, c->partial_len + len + 1))
+                        return log_oom();
+                memcpy(c->partial + c->partial_len, line, len);
+                c->partial[c->partial_len + len] = '\0';
+                log_warning("%s", c->partial);
+                c->partial_len = 0;
+                return 0;
+        }
+
+        if (len == 0)
+                return 0;
+
+        log_warning("%.*s", (int) len, line);
+        return 0;
+}
+
+/* Drains the pipe non-blocking, logging complete lines. Returns 1 on EOF, 0 on EAGAIN, negative on error. */
+static int qemu_stderr_capture_drain(QemuStderrCapture *c) {
+        char buf[4096];
+        int r;
+
+        assert(c);
+
+        if (c->read_fd < 0)
+                return 0;
+
+        for (;;) {
+                ssize_t l = read(c->read_fd, buf, sizeof buf);
+                if (l < 0) {
+                        if (errno == EINTR)
+                                continue;
+                        if (errno == EAGAIN)
+                                return 0;
+
+                        return log_warning_errno(errno, "Failed to read qemu stderr: %m");
+                }
+                if (l == 0)
+                        return 1;
+
+                const char *start = buf, *end = buf + l;
+                for (const char *p = buf; p < end; p++) {
+                        if (*p != '\n')
+                                continue;
+
+                        r = qemu_stderr_capture_log_line(c, start, (size_t)(p - start));
+                        if (r < 0)
+                                return r;
+
+                        start = p + 1;
+                }
+
+                if (start < end) {
+                        size_t rem = (size_t)(end - start);
+                        if (!GREEDY_REALLOC(c->partial, c->partial_len + rem + 1))
+                                return log_oom();
+                        memcpy(c->partial + c->partial_len, start, rem);
+                        c->partial_len += rem;
+                        c->partial[c->partial_len] = '\0';
+                }
+        }
+}
+
+static void qemu_stderr_capture_done(QemuStderrCapture *c) {
+        if (!c)
+                return;
+
+        /* Drain anything still buffered before closing the fd. This catches output produced when
+         * QEMU fails early — before the event loop ever runs — which would otherwise be lost. */
+        (void) qemu_stderr_capture_drain(c);
+        if (c->partial_len > 0) {
+                log_warning("%s", c->partial);
+                c->partial_len = 0;
+        }
+
+        c->partial = mfree(c->partial);
+        c->read_fd = safe_close(c->read_fd);
+}
+
+static int on_qemu_stderr_io(sd_event_source *s, int fd, uint32_t revents, void *userdata) {
+        QemuStderrCapture *c = ASSERT_PTR(userdata);
+        int r;
+
+        assert(s);
+
+        r = qemu_stderr_capture_drain(c);
+        if (r < 0)
+                return sd_event_source_set_enabled(s, SD_EVENT_OFF);
+        if (r > 0) {
+                /* EOF — flush partial trailing line and stop. */
+                if (c->partial_len > 0) {
+                        log_warning("%s", c->partial);
+                        c->partial_len = 0;
+                }
+                return sd_event_source_set_enabled(s, SD_EVENT_OFF);
+        }
+        return 0;
+}
+
 static int on_child_exit(sd_event_source *s, const siginfo_t *si, void *userdata) {
         assert(s);
         assert(si);
@@ -3759,14 +3870,26 @@ static int run_virtual_machine(int kvm_device_fd, int vhost_device_fd) {
                         return log_error_errno(child_pty, "Failed to open PTY slave: %m");
         }
 
+        /* Capture QEMU's stderr via a pipe so it isn't interleaved with guest serial output on the
+         * PTY, and so that early startup failures are visible even when console output isn't yet
+         * flowing (e.g. when the confidential-guest-support backend rejects the requested
+         * configuration). QEMU already prefixes its own messages with its binary name, so we pass
+         * each line through to log_warning() as-is. */
+        _cleanup_close_pair_ int qemu_stderr_pipe[2] = EBADF_PAIR;
+        if (pipe2(qemu_stderr_pipe, O_CLOEXEC|O_NONBLOCK) < 0)
+                return log_error_errno(errno, "Failed to allocate qemu stderr pipe: %m");
+
         /* SIGTERM, not SIGKILL — let QEMU flush state on error-path early exits. */
         _cleanup_(pidref_done_sigterm_wait) PidRef child_pidref = PIDREF_NULL;
         r = pidref_safe_fork_full(
                         qemu_binary,
-                        child_pty >= 0 ? (const int[]) { child_pty, child_pty, child_pty } : NULL,
+                        (const int[]) {
+                                child_pty >= 0 ? child_pty : STDIN_FILENO,
+                                child_pty >= 0 ? child_pty : STDOUT_FILENO,
+                                qemu_stderr_pipe[1],
+                        },
                         pass_fds, n_pass_fds,
-                        FORK_RESET_SIGNALS|FORK_CLOSE_ALL_FDS|FORK_DEATHSIG_SIGTERM|FORK_LOG|FORK_CLOEXEC_OFF|FORK_RLIMIT_NOFILE_SAFE|
-                        (child_pty >= 0 ? FORK_REARRANGE_STDIO : 0),
+                        FORK_RESET_SIGNALS|FORK_CLOSE_ALL_FDS|FORK_DEATHSIG_SIGTERM|FORK_LOG|FORK_CLOEXEC_OFF|FORK_RLIMIT_NOFILE_SAFE|FORK_REARRANGE_STDIO,
                         &child_pidref);
         if (r < 0)
                 return r;
@@ -3785,6 +3908,13 @@ static int run_virtual_machine(int kvm_device_fd, int vhost_device_fd) {
         /* Close QEMU's end of the QMP socketpair in the parent. We don't need it anymore. */
         child_pty = safe_close(child_pty);
         bridge_fds[1] = safe_close(bridge_fds[1]);
+        qemu_stderr_pipe[1] = safe_close(qemu_stderr_pipe[1]);
+
+        /* Hand the read end of the stderr pipe over to the capture struct. Its cleanup hook drains
+         * synchronously on any return path, so error output produced before the event loop runs
+         * (e.g. failures during the synchronous QMP setup below) is still surfaced. */
+        _cleanup_(qemu_stderr_capture_done) QemuStderrCapture qemu_stderr = QEMU_STDERR_CAPTURE_INIT;
+        qemu_stderr.read_fd = TAKE_FD(qemu_stderr_pipe[0]);
 
         r = prepare_device_info(runtime_dir, &config);
         if (r < 0)
@@ -3967,6 +4097,21 @@ static int run_virtual_machine(int kvm_device_fd, int vhost_device_fd) {
         r = sd_event_add_memory_pressure(event, NULL, NULL, NULL);
         if (r < 0)
                 log_debug_errno(r, "Failed to allocate memory pressure event source, ignoring: %m");
+
+        /* Forward QEMU's stderr to our log, one line at a time. The IO source runs at a higher
+         * priority than the child-exit handler so any final error output is drained before we tear
+         * the loop down. The fd is owned by qemu_stderr (declared above), not by the source, so the
+         * cleanup-time drain can still run if we never reach the event loop. */
+        _cleanup_(sd_event_source_unrefp) sd_event_source *qemu_stderr_source = NULL;
+        r = sd_event_add_io(event, &qemu_stderr_source, qemu_stderr.read_fd, EPOLLIN, on_qemu_stderr_io, &qemu_stderr);
+        if (r < 0)
+                return log_error_errno(r, "Failed to add qemu stderr IO source: %m");
+
+        r = sd_event_source_set_priority(qemu_stderr_source, SD_EVENT_PRIORITY_NORMAL - 1);
+        if (r < 0)
+                return log_error_errno(r, "Failed to set priority on qemu stderr IO source: %m");
+
+        (void) sd_event_source_set_description(qemu_stderr_source, "vmspawn-qemu-stderr");
 
         /* Exit when the child exits */
         r = event_add_child_pidref(event, /* ret= */ NULL, &child_pidref, WEXITED, on_child_exit, /* userdata= */ NULL);
