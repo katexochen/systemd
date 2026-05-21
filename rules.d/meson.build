@@ -36,6 +36,7 @@ rules = [
                '81-net-bridge.rules',
                '81-net-dhcp.rules',
                '82-net-auto-link-local.rules',
+               '89-gpt-auto-root-disk-fallback.rules',
                '90-image-dissect.rules',
                '90-iocost.rules',
               )],

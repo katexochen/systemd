@@ -1,0 +1,32 @@
+#  SPDX-License-Identifier: LGPL-2.1-or-later
+#
+#  This file is part of systemd.
+#
+#  systemd is free software; you can redistribute it and/or modify it
+#  under the terms of the GNU Lesser General Public License as published by
+#  the Free Software Foundation; either version 2.1 of the License, or
+#  (at your option) any later version.
+
+# Opt-in fallback that marks a GPT-formatted whole disk as the GPT auto root
+# disk so the dissect chain in 90-image-dissect.rules fires. The blkid builtin
+# only sets ID_PART_GPT_AUTO_ROOT_DISK when LoaderDevicePartUUID is present
+# (set by a boot loader) or the block device is a loopback with backing fname
+# "rootdisk[.raw]". Neither holds for a direct-kernel-booted UKI attached to a
+# virtio-blk image (e.g. systemd-vmspawn --linux=<UKI> --image=<raw> under
+# SEV-SNP, where going through a boot loader would break the launch
+# measurement covered by qemu's -kernel-hashes).
+#
+# The opt-in lives on the kernel cmdline, which is part of the SNP launch
+# measurement, so adding this property does not weaken trust: what we
+# ultimately mount is still gated by dm-verity-signed /usr and the TPM2-bound
+# LUKS root.
+
+ACTION=="remove", GOTO="gpt_auto_root_disk_fallback_end"
+SUBSYSTEM!="block", GOTO="gpt_auto_root_disk_fallback_end"
+ENV{DEVTYPE}!="disk", GOTO="gpt_auto_root_disk_fallback_end"
+ENV{ID_PART_TABLE_TYPE}!="gpt", GOTO="gpt_auto_root_disk_fallback_end"
+ENV{ID_PART_GPT_AUTO_ROOT_DISK}=="1", GOTO="gpt_auto_root_disk_fallback_end"
+
+IMPORT{cmdline}="systemd.gpt_auto_root_disk_fallback", ENV{ID_PART_GPT_AUTO_ROOT_DISK}="1"
+
+LABEL="gpt_auto_root_disk_fallback_end"
