@@ -1553,20 +1553,15 @@ static int cmdline_add_credentials(char ***cmdline, int smbios_dir_fd, const cha
                         if (asprintf(&content, "io.systemd.credential.binary:%s=%s", cred->id, cred_data_b64) < 0)
                                 return log_oom();
 
-                        r = write_string_file_at(
-                                        smbios_dir_fd, cred->id, content,
-                                        WRITE_STRING_FILE_CREATE|WRITE_STRING_FILE_AVOID_NEWLINE|WRITE_STRING_FILE_MODE_0600);
-                        if (r < 0)
-                                return log_error_errno(r, "Failed to write smbios credential file: %m");
-
-                        _cleanup_free_ char *p = path_join(smbios_dir, cred->id);
-                        if (!p)
-                                return log_oom();
-
                         if (strv_extend(cmdline, "-smbios") < 0)
                                 return log_oom();
 
-                        if (strv_extend_joined(cmdline, "type=11,path=", p) < 0)
+                        /* XXX TEST WORKAROUND, REVERT BEFORE PR: deliver the OEM string inline via value=
+                         * instead of path=. QEMU < 10.0.0 has a buffer overrun in the type=11 path= file
+                         * reader (fixed upstream in a7a05f5f6a4) that appends garbage to the string and
+                         * corrupts the base64; the value= code path is unaffected. This exposes the
+                         * credential on QEMU's command line, so it is only acceptable for local testing. */
+                        if (strv_extend_joined(cmdline, "type=11,value=", content) < 0)
                                 return log_oom();
 
                 } else if (ARCHITECTURE_SUPPORTS_FW_CFG) {
