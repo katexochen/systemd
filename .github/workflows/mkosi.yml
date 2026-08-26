@@ -88,6 +88,11 @@ jobs:
             release: edge
             libc: musl
             skip: TEST-92-TPM2-SWTPM
+          - distro: fedora
+            release: "44"
+            runner: coco-snp
+            coco: 1
+            tests: TEST-94-COCO
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -99,12 +104,14 @@ jobs:
       # immediately, we remove the files in the background. However, we first move them to a different location
       # so that nothing tries to use anything in these directories anymore while we're busy deleting them.
       - name: Free disk space
+        if: matrix.runner != 'coco-snp'
         run: |
           sudo mv /usr/local /usr/local.trash
           sudo mv /opt/hostedtoolcache /opt/hostedtoolcache.trash
           sudo systemd-run rm -rf /usr/local.trash /opt/hostedtoolcache.trash
 
       - name: Btrfs
+        if: matrix.runner != 'coco-snp'
         run: |
           truncate --size=100G btrfs.raw
           mkfs.btrfs btrfs.raw
@@ -134,8 +141,8 @@ jobs:
           ToolsTreeRelease=${{ matrix.release }}
           WithTests=yes
 
-          WorkspaceDirectory=$TMPDIR
-          PackageCacheDirectory=$TMPDIR/cache
+          WorkspaceDirectory=${TMPDIR:-/var/tmp}
+          PackageCacheDirectory=${TMPDIR:-/var/tmp}/cache
 
           Environment=
                   # Build debuginfo packages since we'll be publishing the packages as artifacts.
@@ -198,7 +205,18 @@ jobs:
           fi
 
       - name: Build image
-        run: sudo mkosi box -- meson compile -C build mkosi
+        run: |
+          sudo mkosi box -- meson compile -C build mkosi
+
+      - name: Build image directory
+        if: matrix.runner == 'coco-snp'
+        # Boot mode inside an unprivileged container can't dissect disk images (no loop devices),
+        # so additionally assemble a directory format output for the nspawn layer to boot from,
+        # selected via $TEST_MKOSI_ARGS below. It needs a separate output directory, as mkosi
+        # would otherwise remove the disk output, which provides the images vmspawn boots in the
+        # coco tests.
+        run: |
+          sudo mkosi --format=directory --output-dir=build/mkosi.output.dir -f
 
       - name: Make sure sources weren't polluted by package build scripts
         run: |
@@ -233,6 +251,7 @@ jobs:
             TEST_NO_KVM="${{ matrix.no_kvm || 0 }}" \
             TEST_RUNNER="${{ matrix.runner || 'ubuntu-24.04' }}" \
             TEST_SKIP="${{ matrix.skip }}" \
+            TEST_MKOSI_ARGS="${{ matrix.coco == 1 && '--format=directory --output-dir=build/mkosi.output.dir' || '' }}" \
             meson test \
             -C build \
             --timeout-multiplier="${timeout_multiplier:-1}" \
@@ -242,7 +261,7 @@ jobs:
             --print-errorlogs \
             --no-stdsplit \
             --num-processes "$(($(nproc) - 1))" \
-            "${MAX_LINES[@]}"
+            "${MAX_LINES[@]}" ${{ matrix.tests }}
 
       - name: Fix journal ownership
         if: failure() && (github.repository == 'systemd/systemd' || github.repository == 'systemd/systemd-stable')
