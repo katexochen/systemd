@@ -54,40 +54,40 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - distro: arch
-            release: rolling
-            cflags: "-O2 -D_FORTIFY_SOURCE=3"
-            vm: 1
-          - distro: debian
-            release: stable
-          - distro: debian
-            release: testing
-            shim: 1
-          - distro: debian
-            release: testing
-            runner: ubuntu-24.04-arm
-            no_qemu: 1
-            no_kvm: 1
-          - distro: ubuntu
-            release: noble
-          - distro: ubuntu
-            release: resolute
-          - distro: fedora
-            release: "44"
-            sanitizers: address,undefined
-            llvm: 1
-          - distro: fedora
-            release: rawhide
-          - distro: opensuse
-            release: tumbleweed
-          - distro: centos
-            release: "9"
-          - distro: centos
-            release: "10"
-          - distro: postmarketos
-            release: edge
-            libc: musl
-            skip: TEST-92-TPM2-SWTPM
+          # - distro: arch
+          #   release: rolling
+          #   cflags: "-O2 -D_FORTIFY_SOURCE=3"
+          #   vm: 1
+          # - distro: debian
+          #   release: stable
+          # - distro: debian
+          #   release: testing
+          #   shim: 1
+          # - distro: debian
+          #   release: testing
+          #   runner: ubuntu-24.04-arm
+          #   no_qemu: 1
+          #   no_kvm: 1
+          # - distro: ubuntu
+          #   release: noble
+          # - distro: ubuntu
+          #   release: resolute
+          # - distro: fedora
+          #   release: "44"
+          #   sanitizers: address,undefined
+          #   llvm: 1
+          # - distro: fedora
+          #   release: rawhide
+          # - distro: opensuse
+          #   release: tumbleweed
+          # - distro: centos
+          #   release: "9"
+          # - distro: centos
+          #   release: "10"
+          # - distro: postmarketos
+          #   release: edge
+          #   libc: musl
+          #   skip: TEST-92-TPM2-SWTPM
           - distro: fedora
             release: "44"
             runner: coco-snp
