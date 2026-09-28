@@ -255,6 +255,7 @@ jobs:
             TEST_MKOSI_ARGS="${{ matrix.coco == 1 && '--format=directory --output-dir=build/mkosi.output.dir' || '' }}" \
             TEST_BIND_DIRS="${{ matrix.coco == 1 && '/var/lib/snp-certs' || '' }}" \
             meson test \
+            ${{ matrix.tests && '-v' || '' }} \
             -C build \
             --timeout-multiplier="${timeout_multiplier:-1}" \
             --no-rebuild \
