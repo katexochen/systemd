@@ -21,6 +21,7 @@
 #include "stat-util.h"
 #include "string-util.h"
 #include "strv.h"
+#include "vmspawn-memory.h"
 #include "vmspawn-qmp.h"
 #include "vmspawn-util.h"
 
@@ -1703,6 +1704,8 @@ VmspawnQmpBridge* vmspawn_qmp_bridge_free(VmspawnQmpBridge *b) {
         hashmap_free(b->block_devices_by_qmp_id);
         hashmap_free(b->block_devices);
         hashmap_free(b->pending_jobs);
+
+        vmspawn_memory_free(b->memory);
 
         FOREACH_ELEMENT(owner, b->hotplug_port_owner)
                 free(*owner);

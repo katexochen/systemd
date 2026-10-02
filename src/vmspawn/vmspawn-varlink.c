@@ -17,6 +17,7 @@
 #include "varlink-io.systemd.VirtualMachineInstance.h"
 #include "varlink-util.h"
 #include "vmspawn-bind-volume.h"
+#include "vmspawn-memory.h"
 #include "vmspawn-qmp.h"
 #include "vmspawn-varlink.h"
 
@@ -470,6 +471,9 @@ static int on_qmp_event(
         /* Notification still fans out below. */
         if (streq(event, "DEVICE_DELETED"))
                 (void) vmspawn_qmp_dispatch_device_deleted(ctx->bridge, data);
+
+        if (streq(event, "BALLOON_CHANGE"))
+                (void) vmspawn_memory_dispatch_event(ctx->bridge->memory, event, data);
 
         return notify_event_subscribers(ctx, event, data);
 }

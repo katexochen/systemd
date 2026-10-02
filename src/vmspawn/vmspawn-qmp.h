@@ -27,6 +27,8 @@ typedef enum VmspawnQmpFeatureFlags {
         VMSPAWN_QMP_FEATURE_DISCARD_NO_UNREF = 1u << 1,
 } VmspawnQmpFeatureFlags;
 
+typedef struct VmspawnMemory VmspawnMemory;
+
 typedef struct VmspawnQmpBridge {
         QmpClient *qmp;
         Hashmap *pending_jobs;         /* blockdev-create continuations */
@@ -36,6 +38,7 @@ typedef struct VmspawnQmpBridge {
         int scsi_controller_port_idx;  /* hotplug port idx taken by virtio-scsi-pci, -1 if none */
         uint64_t next_block_counter;   /* monotonic counter feeding internal QMP names (vmspawn-<N>-*) */
         VmspawnQmpFeatureFlags features;
+        VmspawnMemory *memory;
         bool setup_done;
         bool scsi_controller_created;  /* virtio-scsi-pci has been device_add'd */
 } VmspawnQmpBridge;
