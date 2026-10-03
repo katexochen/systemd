@@ -198,3 +198,4 @@ int vmspawn_qmp_replace_block_device(
                 int fd,
                 QmpDriveFlags fd_flags);
 int vmspawn_qmp_dispatch_device_deleted(VmspawnQmpBridge *bridge, sd_json_variant *data);
+int vmspawn_qmp_reply_error(sd_varlink *link, const char *error_desc, int error);
