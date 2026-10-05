@@ -9,6 +9,8 @@ if [[ "${BASH_SOURCE[0]}" -ef "$0" ]]; then
     exit 1
 fi
 
+# shellcheck source=test/units/util.sh
+. "$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")/util.sh"
 # shellcheck source=test/units/TEST-94-COCO/fixtures.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/fixtures.sh"
 

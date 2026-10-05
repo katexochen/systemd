@@ -14,6 +14,7 @@ if [[ "${COCO_TYPE:?}" != "sev-snp" ]]; then
     exit 77
 fi
 
+IMAGE_DIR="$(vmspawn_images_dir)"
 MACHINE="coco-snp-direct-$$"
 WORKDIR="$(mktemp -d)"
 mkdir -p "$WORKDIR/honest" "$WORKDIR/hostile"
