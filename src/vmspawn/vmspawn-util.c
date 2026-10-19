@@ -68,6 +68,7 @@ OvmfConfig* ovmf_config_free(OvmfConfig *config) {
         free(config->device);
         free(config->mode);
         strv_free(config->features);
+        strv_free(config->interface_types);
         return mfree(config);
 }
 
@@ -83,8 +84,9 @@ static bool firmware_is_stateless(const char *device, const char *mode, char * c
         if (strv_contains(features, "host-uefi-vars"))
                 return false;
 
-        /* Otherwise, memory-mapped firmware (loaded via -bios) carries no NVRAM. */
-        if (streq_ptr(device, "memory"))
+        /* Otherwise, memory-mapped firmware (loaded via -bios) carries no NVRAM, and IGVM describes the
+         * complete initial guest state and carries no variable store either. */
+        if (STR_IN_SET(device, "memory", "igvm"))
                 return true;
 
         /* Only mode "stateless" is stateless: an absent mode means "split" (executable plus NVRAM template),
@@ -96,6 +98,14 @@ bool ovmf_config_is_stateless(const OvmfConfig *config) {
         assert(config);
 
         return firmware_is_stateless(config->device, config->mode, config->features);
+}
+
+bool ovmf_config_is_svsm(const OvmfConfig *config) {
+        return config && strv_contains(config->interface_types, "svsm");
+}
+
+bool ovmf_config_is_igvm(const OvmfConfig *config) {
+        return config && streq_ptr(config->device, "igvm");
 }
 
 DEFINE_STRING_TABLE_LOOKUP(network_stack, NetworkStack);
@@ -269,6 +279,11 @@ static int firmware_mapping(const char *name, sd_json_variant *v, sd_json_dispat
                 { "uefi-vars", SD_JSON_VARIANT_OBJECT, firmware_uefi_vars,      0,                                0                 },
                 {}
         };
+        static const sd_json_dispatch_field table_igvm[] = {
+                { "device",   SD_JSON_VARIANT_STRING, sd_json_dispatch_string, offsetof(FirmwareData, device),   SD_JSON_MANDATORY },
+                { "filename", SD_JSON_VARIANT_STRING, sd_json_dispatch_string, offsetof(FirmwareData, firmware), SD_JSON_MANDATORY },
+                {}
+        };
 
         sd_json_variant *d = sd_json_variant_by_key(v, "device");
         if (!d || !sd_json_variant_is_string(d))
@@ -279,6 +294,8 @@ static int firmware_mapping(const char *name, sd_json_variant *v, sd_json_dispat
                 return sd_json_dispatch(v, table_flash, flags, userdata);
         if (streq(device, "memory"))
                 return sd_json_dispatch(v, table_memory, flags, userdata);
+        if (streq(device, "igvm"))
+                return sd_json_dispatch(v, table_igvm, flags, userdata);
 
         return log_debug_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "Unsupported firmware mapping device type '%s'.", device);
 }
@@ -476,6 +493,7 @@ static int ovmf_config_make(FirmwareData *fwd, OvmfConfig **ret) {
                 .device = TAKE_PTR(fwd->device),
                 .mode = TAKE_PTR(fwd->mode),
                 .features = TAKE_PTR(fwd->features),
+                .interface_types = TAKE_PTR(fwd->interface_types),
         };
 
         *ret = TAKE_PTR(config);
