@@ -130,6 +130,7 @@ typedef struct OvmfConfig {
         char *device;
         char *mode;
         char **features;
+        char **interface_types;
 } OvmfConfig;
 
 static inline const char* ovmf_config_format(const OvmfConfig *c) {
@@ -141,6 +142,8 @@ static inline const char* ovmf_config_vars_format(const OvmfConfig *c) {
 }
 
 bool ovmf_config_is_stateless(const OvmfConfig *config);
+bool ovmf_config_is_svsm(const OvmfConfig *config);
+bool ovmf_config_is_igvm(const OvmfConfig *config);
 bool ovmf_config_has_feature(const OvmfConfig *config, const char *feature);
 
 static inline bool ovmf_config_has_host_uefi_vars(const OvmfConfig *c) {
