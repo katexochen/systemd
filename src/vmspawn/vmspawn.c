@@ -2977,7 +2977,39 @@ static int run_virtual_machine(int kvm_device_fd, int vhost_device_fd) {
                                                        "which --coco=%s requires as keys cannot be enrolled at runtime in stateless firmware.",
                                                        arg_firmware ?: ovmf_config->path,
                                                        confidential_computing_to_string(arg_confidential_computing));
+
+                        bool igvm = ovmf_config_is_igvm(ovmf_config);
+                        bool svsm = ovmf_config_is_svsm(ovmf_config);
+
+                        if (arg_confidential_computing == COCO_SEV_SNP) {
+                                /* QEMU cannot embed kernel hashes into IGVM-loaded firmware (it never parses the OVMF
+                                 * GUID table in IGVM mode). Without an SVSM there is no vTPM either, hence no way to
+                                 * measure the boot chain at all. */
+                                if (igvm && !svsm)
+                                        return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP),
+                                                               "Firmware descriptor '%s' describes IGVM firmware without an SVSM, "
+                                                               "which cannot be measured under --coco=sev-snp, refusing.",
+                                                               arg_firmware ?: ovmf_config->path);
+                                if (!svsm && !arg_linux)
+                                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                                               "--coco=sev-snp requires either direct kernel boot via --linux= "
+                                                               "or firmware with SVSM support, to ensure the guest boot can be measured.");
+                                /* Without kernel hashes (see above), OVMF built for SEV (OvmfPkg/AmdSev) refuses
+                                 * the kernel, initrd and command line passed via fw_cfg and boots from disk
+                                 * instead, so --linux= would silently have no effect. */
+                                if (svsm && arg_linux)
+                                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                                               "SVSM firmware boots the guest from disk, --linux= is not supported with it.");
+                                if (svsm && arg_tpm > 0)
+                                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                                               "SVSM firmware provides the guest's vTPM, refusing to attach a second "
+                                                               "one with --tpm=yes.");
+                        }
                 }
+
+                /* An SVSM runs below the guest in an SEV-SNP VM, there is nothing to run it on otherwise. */
+                if (ovmf_config_is_svsm(ovmf_config) && arg_confidential_computing != COCO_SEV_SNP)
+                        return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "SVSM firmware is only supported with --coco=sev-snp.");
 
                 log_debug("Using OVMF firmware %s Secure Boot support.", sb ? "with" : "without");
         }
@@ -3037,6 +3069,19 @@ static int run_virtual_machine(int kvm_device_fd, int vhost_device_fd) {
 
         if (arg_confidential_computing != COCO_NO) {
                 r = qemu_config_key(config_file, "kernel-irqchip", "split");
+                if (r < 0)
+                        return r;
+        }
+
+        if (ovmf_config_is_igvm(ovmf_config)) {
+                r = qemu_config_key(config_file, "igvm-cfg", "igvm0");
+                if (r < 0)
+                        return r;
+        }
+
+        if (arg_confidential_computing == COCO_SEV_SNP && ovmf_config_is_svsm(ovmf_config)) {
+                /* Mirrors COCONUT-SVSM's GUEST_VMPL, fixed for now. */
+                r = qemu_config_key(config_file, "device-plane", "2");
                 if (r < 0)
                         return r;
         }
@@ -3269,10 +3314,16 @@ static int run_virtual_machine(int kvm_device_fd, int vhost_device_fd) {
                 r = qemu_config_section(config_file, "object", "snp0",
                                         "qom-type", "sev-snp-guest",
                                         "cbitpos", "51",
-                                        "reduced-phys-bits", "1",
-                                        "kernel-hashes", "on");
+                                        "reduced-phys-bits", "1");
                 if (r < 0)
                         return r;
+
+                /* See the IGVM check in the firmware block. */
+                if (!ovmf_config_is_igvm(ovmf_config)) {
+                        r = qemu_config_key(config_file, "kernel-hashes", "on");
+                        if (r < 0)
+                                return r;
+                }
         } else if (arg_confidential_computing == COCO_TDX) {
                 r = qemu_config_section(config_file, "object", "tdx0",
                                         "qom-type", "tdx-guest");
@@ -3523,9 +3574,16 @@ static int run_virtual_machine(int kvm_device_fd, int vhost_device_fd) {
         }
 
         /* Memory-mapped firmware asks for -bios loading by definition. Under
-         * confidential computing -bios is used even for (stateless) flash firmware. */
+         * confidential computing -bios is used even for (stateless) flash firmware.
+         * IGVM firmware is passed via object. */
         _cleanup_close_pair_ int ovmf_vars_fds[2] = EBADF_PAIR;
-        if (ovmf_config && (arg_confidential_computing != COCO_NO || streq_ptr(ovmf_config->device, "memory"))) {
+        if (ovmf_config_is_igvm(ovmf_config)) {
+                r = qemu_config_section(config_file, "object", "igvm0",
+                                        "qom-type", "igvm-cfg",
+                                        "file", ovmf_config->path);
+                if (r < 0)
+                        return r;
+        } else if (ovmf_config && (arg_confidential_computing != COCO_NO || streq_ptr(ovmf_config->device, "memory"))) {
                 r = strv_extend_many(&cmdline, "-bios", ovmf_config->path);
                 if (r < 0)
                         return r;
@@ -3965,12 +4023,14 @@ static int run_virtual_machine(int kvm_device_fd, int vhost_device_fd) {
          * measured the SMBIOS table (the firmware's own SMBIOS measurement zeroes the OEM strings), so
          * direct linux boot uses the cpio as well. The Linux EFI stub measures the initrd into RTMR 2
          * there.
+         * With SVSM firmware under --coco=sev-snp the SMBIOS path is used instead: systemd-stub measures
+         * the OEM strings into the SVSM's vTPM, the same way it does under TDX.
          * The initrd path requires a guest PID1 that knows about /.extra/system_credentials/, so it stays
          * limited to these cases and everything else continues to use the SMBIOS path below, which works
          * with older systemd versions too.
          * Must run after all credential-mutating calls above so the cpio captures the complete set. */
         bool use_initrd_cpio = arg_credentials.n_credentials > 0 &&
-                               (arg_confidential_computing == COCO_SEV_SNP ||
+                               ((arg_confidential_computing == COCO_SEV_SNP && !ovmf_config_is_svsm(ovmf_config)) ||
                                 (arg_confidential_computing == COCO_TDX && arg_linux && arg_linux_image_type != KERNEL_IMAGE_TYPE_UKI));
 
         _cleanup_(unlink_and_freep) char *credentials_cpio_path = NULL;
@@ -4630,14 +4690,6 @@ static int verify_arguments(void) {
                         return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
                                                "--coco=sev-snp can't be used with %s firmware",
                                                firmware_to_string(arg_firmware_type));
-                /* kernel-hashes=on only covers what QEMU itself loads via -kernel/-initrd/-append.
-                 * Without --linux= the kernel and initrd come off disk via OVMF and aren't part
-                 * of the launch measurement, leaving the guest unattestable in any meaningful
-                 * way. Require direct kernel boot so the boot chain starts from a measured state. */
-                if (!arg_linux)
-                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                               "--coco=sev-snp requires --linux= "
-                                               "so kernel, initrd and cmdline are covered by the launch measurement.");
         }
 
         if (arg_confidential_computing == COCO_TDX) {
