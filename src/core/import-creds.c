@@ -613,6 +613,15 @@ static int parse_smbios_strings(ImportCredentialsContext *c, const char *data, s
         return 0;
 }
 
+static bool svsm_vtpm_present(void) {
+        /* Whether the TPM the guest sees is provided by an SVSM running below it at a more privileged VMPL,
+         * i.e. is part of the confidential VM's launch measurement rather than host-emulated. The kernel
+         * registers the "tpm-svsm" platform device during early init when the SVSM advertises its vTPM
+         * protocol, independently of the tpm_svsm driver being loaded yet, hence it's usable this early. */
+
+        return access("/sys/bus/platform/devices/tpm-svsm", F_OK) >= 0;
+}
+
 static int import_credentials_smbios(ImportCredentialsContext *c) {
         int r;
 
@@ -624,14 +633,19 @@ static int import_credentials_smbios(ImportCredentialsContext *c) {
                 return 0;
 
         /* SMBIOS OEM strings are host-controlled. In a confidential VM we only accept them when the boot
-         * loader (sd-boot or sd-stub) measured the SMBIOS table including type 11, so that they are covered
-         * by the attestation evidence: under TDX the loader measures via the CC protocol into RTMR 0. The
-         * firmware's own SMBIOS measurement does not cover type 11, edk2's SmbiosMeasurementDxe filters it
-         * out before hashing. Direct kernel boots without a loader hence get no SMBIOS credential, vmspawn
-         * uses the initrd cpio there. Other CVM types have no measurement register for this. */
+         * loader (sd-boot or sd-stub) measured the SMBIOS table including type 11 into a register that is
+         * part of the guest's trusted computing base, so that they are covered by the attestation evidence:
+         * under TDX the loader measures via the CC protocol into RTMR 0, under SEV-SNP with an SVSM into
+         * PCR 1 of the SVSM's vTPM. A host-emulated TPM doesn't qualify, hence SEV-SNP without an SVSM
+         * (and SEV, SEV-ES) get no SMBIOS credentials. The firmware's own SMBIOS measurement does not cover
+         * type 11, edk2's SmbiosMeasurementDxe filters it out before hashing. Direct kernel boots without a
+         * loader hence get no SMBIOS credentials either, vmspawn uses the initrd cpio there. */
         ConfidentialVirtualization cv = detect_confidential_virtualization();
         if (cv > 0) {
-                if (cv != CONFIDENTIAL_VIRTUALIZATION_TDX)
+                bool trusted_register =
+                        cv == CONFIDENTIAL_VIRTUALIZATION_TDX ||
+                        (cv == CONFIDENTIAL_VIRTUALIZATION_SEV_SNP && svsm_vtpm_present());
+                if (!trusted_register)
                         return 0;
 
                 r = efi_measured_smbios(LOG_DEBUG);
