@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+# Downstream coconut-svsm packages. These don't exist upstream yet.
+
+[copr:copr.fedorainfracloud.org:katexochen:coconut-svsm]
+name=Copr repo for coconut-svsm owned by katexochen
+baseurl=https://download.copr.fedorainfracloud.org/results/katexochen/coconut-svsm/fedora-rawhide-$basearch/
+type=rpm-md
+skip_if_unavailable=False
+gpgcheck=1
+gpgkey=https://download.copr.fedorainfracloud.org/results/katexochen/coconut-svsm/pubkey.gpg
+repo_gpgcheck=0
+enabled=1
+enabled_metadata=1
