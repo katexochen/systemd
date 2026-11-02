@@ -45,10 +45,11 @@ trap at_exit EXIT
 # - no_host_tpm: vmspawn attached no TPM by default
 # - creds_vmspawn: credential transport by vmspawn is working (via initrd for SNP)
 # - creds_cmdline: credential transport via cmdline is working (cmdline is measured on SNP)
-# - tsm_signer_varlink_snp: the tsm report signer yields an SNP attestation report echoing the digest
+# - tsm_signer_sign: the tsm report signer returns exactly one signature
+# - tsm_signer_rejects: the tsm report signer rejects malformed requests
 # - report_pipeline: signing a report via io.systemd.Report; the result is verified below, host-side
 vmspawn_boot_coco "$MACHINE-honest" "$COCO_TYPE" "$WORKDIR/honest" \
-    'detect_virt no_host_tpm creds_vmspawn creds_cmdline tsm_signer_varlink_snp report_pipeline' \
+    'detect_virt no_host_tpm creds_vmspawn creds_cmdline tsm_signer_sign tsm_signer_rejects report_pipeline' \
     --image="$IMAGE_DIR/image.raw" \
     --firmware="$FIRMWARE" \
     --linux="$IMAGE_DIR/image.vmlinuz" \
