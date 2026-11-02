@@ -2583,9 +2583,63 @@ int tpm2_get_ek(
         return tpm2_object_index_to_handle(c, TPM2_EK_HANDLE, session, ret_public, ret_name, ret_qname, ret_handle);
 }
 
+#if HAVE_OPENSSL
+static int tpm2_context_is_svsm_tpm(Tpm2Context *c) {
+        _cleanup_(sd_device_unrefp) sd_device *d = NULL;
+        sd_device *p = NULL;
+        const char *subsys, *sysname;
+        int r;
+
+        assert(c);
+
+        if (!streq_ptr(c->tcti_driver, "device")) {
+                log_debug("Not using the 'device' TCTI, cannot identify the TPM, not treating it as the SVSM vTPM.");
+                return 0;
+        }
+
+        if (!c->tcti_param) {
+                log_debug("No TPM device node specified, not treating the TPM as the SVSM vTPM.");
+                return 0;
+        }
+
+        r = sd_device_new_from_devname(&d, c->tcti_param);
+        if (r < 0) {
+                log_debug_errno(r, "Failed to acquire udev entry for device '%s': %m", c->tcti_param);
+                return 0;
+        }
+
+        r = sd_device_get_parent(d, &p);
+        if (r < 0) {
+                log_device_debug_errno(d, r, "Failed to get parent of device '%s': %m", c->tcti_param);
+                return 0;
+        }
+
+        r = sd_device_get_subsystem(p, &subsys);
+        if (r < 0) {
+                log_device_debug_errno(p, r, "Failed to get subsystem of parent of '%s': %m", c->tcti_param);
+                return 0;
+        }
+
+        if (!streq(subsys, "platform"))
+                return 0;
+
+        r = sd_device_get_sysname(p, &sysname);
+        if (r < 0) {
+                log_device_debug_errno(p, r, "Failed to get sysname of parent of '%s': %m", c->tcti_param);
+                return 0;
+        }
+
+        return streq(sysname, "tpm-svsm");
+}
+#endif
+
 /* Get the EK, creating one if needed. This tries each of the supported templates in order of preference,
  * and will persist and return an EK created with the first template that has an EK certificate, and where
  * the created EK matches the certificate's public key.
+ *
+ * The COCONUT SVSM vTPM has no EK certificates. Instead, the SVSM reports the EK it derives from the
+ * RSA 2048 L-1 template in its vTPM service manifest, which is covered by the SNP attestation report. If no
+ * certificate matched and the TPM is the SVSM vTPM, an EK is created from that template and persisted.
  *
  * Returns 1 if a new EK was created and persisted, 0 if an EK already exists, or < 0 on error. */
 int tpm2_get_or_create_ek(
@@ -2705,6 +2759,44 @@ int tpm2_get_or_create_ek(
                 if (r == 0)
                         /* This should never happen. */
                         return log_debug_errno(SYNTHETIC_ERRNO(ENOTRECOVERABLE), "EK we just persisted couldn't be found.");
+
+                return 1; /* > 0 → EK newly set up */
+        }
+
+        /* For a SVSM vTPM, there is no EK cert, the EK is authenticated via the SNP attestation report. */
+        if (tpm2_context_is_svsm_tpm(c)) {
+                TPM2B_PUBLIC template = {
+                        .size = sizeof(TPMT_PUBLIC),
+                };
+
+                tpm2_get_default_ek_template(TPM2_EK_TEMPLATE_RSA_2048_LEGACY, &template.publicArea);
+
+                _cleanup_(tpm2_handle_freep) Tpm2Handle *transient_handle = NULL;
+                r = tpm2_create_primary(
+                                c,
+                                session,
+                                ESYS_TR_RH_ENDORSEMENT,
+                                &template,
+                                /* sensitive= */ NULL,
+                                /* ret_public= */ NULL,
+                                &transient_handle);
+                if (r < 0)
+                        return r;
+
+                r = tpm2_persist_handle(c, transient_handle, session, TPM2_EK_HANDLE, /* ret_persistent_handle= */ NULL);
+                if (r < 0)
+                        return r;
+
+                r = tpm2_get_ek(c, session, ret_public, ret_name, ret_qname, ret_handle);
+                if (r < 0)
+                        return r;
+                if (r == 0)
+                        /* This should never happen. */
+                        return log_debug_errno(SYNTHETIC_ERRNO(ENOTRECOVERABLE), "EK we just persisted couldn't be found.");
+
+                log_info("No EK certificate on the SVSM vTPM, created EK with template '%s'. "
+                         "It is attested by the SVSM vTPM service report instead of a certificate.",
+                         ek_template_names[TPM2_EK_TEMPLATE_RSA_2048_LEGACY]);
 
                 return 1; /* > 0 → EK newly set up */
         }
