@@ -81,15 +81,17 @@ _coco_collect_artifacts() {
     done <"$results"
 }
 
-# coco_verify_snp_report REPORT
-# Verify the SNP attestation report REPORT with snpguest: the report parses, the AMD certificate
-# chain (ARK -> ASK -> VCEK) is valid, and the report is signed by the VCEK. The certificates must
+# coco_verify_snp_report REPORT [snpguest verify attestation options...]
+# Verify the SNP attestation report REPORT with snpguest: the AMD certificate chain (ARK -> ASK -> VCEK)
+# is valid, the report is signed by the VCEK, and only then that its fields match what the options
+# expect (--report-data, --measurement, --host-data, each hex with a 0x prefix). The certificates must
 # be pre-provisioned in a host directory named 'snp-certs', bound in via $TEST_BIND_DIRS: the
 # harness runs the container without network, and the AMD KDS rate-limits hard enough that
 # fetching them per test run would be flaky anyway.
 coco_verify_snp_report() {
     local report="${1:?}"
     local certs_dir=/work/snp-certs
+    shift
 
     # snpguest is part of the test image (see mkosi.conf.d/fedora): its absence is a broken image,
     # not a reason to silently skip the verification.
@@ -98,8 +100,6 @@ coco_verify_snp_report() {
         return 1
     fi
 
-    snpguest display report "$report"
-
     if [[ ! -d "$certs_dir" ]]; then
         echo "no AMD certificates at $certs_dir; fetch them once on the host" \
             "(snpguest fetch ca/vcek) and pass the directory via \$TEST_BIND_DIRS" >&2
@@ -107,19 +107,26 @@ coco_verify_snp_report() {
     fi
 
     snpguest verify certs "$certs_dir"
-    snpguest verify attestation "$certs_dir" "$report"
+    snpguest verify attestation "$certs_dir" "$report" "$@"
+    snpguest display report "$report"
 }
 
-# coco_verify_snp_signed_report REPORT_SEQ WORKDIR
+# coco_verify_snp_signed_report REPORT_SEQ WORKDIR [IGVM]
 # Check a signed report produced by io.systemd.Report's GenerateSigned the way a remote verifier
-# would: the tsm signature record must carry the digest of the signed report bytes, that digest must
-# be embedded in the REPORT_DATA field of the enclosed SNP attestation report, and the attestation
-# report must verify against the AMD certificate chain (see coco_verify_snp_report).
+# would, from nothing but the signed report: the tsm signature record must carry an SNP attestation
+# report that verifies against the AMD certificate chain and binds the digest of the signed report
+# bytes via its REPORT_DATA field. Without IGVM, the report must be a plain one, which embeds the
+# digest. With IGVM, it must be the vTPM service report of the SVSM in that IGVM firmware: REPORT_DATA
+# is SHA-512(digest || manifest), the manifest being the vTPM's EK, the report comes from VMPL 0
+# where only the SVSM runs, and its launch measurement is the one igvmmeasure computes for IGVM.
+# WORKDIR holds intermediate files.
 coco_verify_snp_signed_report() {
-    local report_seq="${1:?}" workdir="${2:?}"
+    local report_seq="${1:?}" workdir="${2:?}" igvm="${3:-}"
     local message="$workdir/message.bin"
     local report_file="$workdir/attestation-report.bin"
-    local sig digest report
+    local manifest_file="$workdir/manifest.bin"
+    local sig digest report_data
+    local verify_args=()
 
     # The first JSON-SEQ record is the report itself: exactly the byte sequence that got signed,
     # including the leading record separator (0x1e) and the trailing newline, so 'head -n1'
@@ -133,19 +140,30 @@ coco_verify_snp_signed_report() {
     test -n "$sig"
     assert_eq "$(jq -r .mediaType <<<"$sig")" "application/vnd.io.systemd.report.signature"
     assert_eq "$(jq -r .sha256 <<<"$sig")" "$digest"
-    assert_eq "$(jq -r '.data.provider' <<<"$sig")" "sev_guest"
+    assert_eq "$(jq -r .data.provider <<<"$sig")" "sev_guest"
+    jq -r .data.outblob <<<"$sig" | base64 -d >"$report_file"
 
-    jq -r '.data.outblob' <<<"$sig" | base64 -d >"$report_file"
+    # What REPORT_DATA must be to bind the digest. The manifest is unauthenticated input until the
+    # attestation report it is bound into has been verified below.
+    if [[ -n "$igvm" ]]; then
+        assert_eq "$(jq -r .data.serviceProvider <<<"$sig")" "svsm"
+        assert_eq "$(jq -r .data.serviceGuid <<<"$sig")" "$COCO_SVSM_VTPM_GUID"
+        jq -r .data.manifestblob <<<"$sig" | base64 -d >"$manifest_file"
+        test -s "$manifest_file"
+        report_data="$({ xxd -r -p <<<"$digest$(printf '00%.0s' {1..32})"; cat "$manifest_file"; } | sha512sum | cut -d' ' -f1)"
+        verify_args+=(--measurement "0x$(igvmmeasure "$igvm" measure --bare)")
+    else
+        assert_eq "$(jq -r '.data.serviceProvider // ""' <<<"$sig")" ""
+        report_data="$digest$(printf '00%.0s' {1..32})"
+    fi
 
-    # The attestation report must bind the report digest, not some other value. Hex-encode the
-    # report so fields can be sliced by string offset (2 hex chars per byte).
-    report="$(od -An -vtx1 <"$report_file" | tr -d ' \n')"
-    assert_eq "$((${#report} / 2))" "1184"
-    # REPORT_DATA sits at byte offset 0x50: the digest, zero-padded to 64 bytes.
-    assert_eq "${report:2*0x50:64}" "$digest"
-    assert_eq "${report:2*0x70:64}" "$(printf '00%.0s' {1..32})"
+    # Authenticate the attestation report first, then check what it says.
+    coco_verify_snp_report "$report_file" --report-data "0x$report_data" "${verify_args[@]}"
 
-    coco_verify_snp_report "$report_file"
+    if [[ -n "$igvm" ]]; then
+        # The guest runs at VMPL 2 and can't request reports for a more privileged VMPL.
+        assert_eq "$(snpguest display report "$report_file" --output json | jq -r .vmpl)" "0"
+    fi
 }
 
 # vmspawn_boot_coco MACHINE COCO_TYPE WORKDIR TESTCASES [systemd-vmspawn args...]

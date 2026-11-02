@@ -24,12 +24,13 @@ _coco_assert_cred_absent() {
     assert_fail test -e "$encrypted_creds_dir/$id"
 }
 
-# _coco_assert_smbios_injected ID
-# Assert the guest received an SMBIOS type #11 OEM string carrying credential ID. The scenario
-# injected it, so a miss means the injection was lost on the way in and concluding anything from the
-# credential's absence afterwards would be meaningless.
+# _coco_assert_smbios_injected PREFIX
+# Assert the guest received an SMBIOS type #11 OEM string starting with PREFIX, e.g.
+# "io.systemd.credential:ID=" as a scenario injects it or "io.systemd.credential.binary:ID=" as vmspawn
+# writes it. The string was injected, so a miss means the injection was lost on the way in and
+# concluding anything from the credential's absence afterwards would be meaningless.
 _coco_assert_smbios_injected() {
-    local id="${1:?}" raw
+    local prefix="${1:?}" raw
 
     [[ -d /sys/firmware/dmi/entries ]] || modprobe dmi-sysfs || :
 
@@ -38,12 +39,12 @@ _coco_assert_smbios_injected() {
         # The entry is a blob of NUL-separated strings: --text to search it anyway, --fixed-strings
         # because credential names contain dots. Redirect rather than -q, which would exit early and
         # risk SIGPIPE on the reader.
-        if grep --text --fixed-strings "io.systemd.credential:$id=" "$raw" >/dev/null; then
+        if grep --text --fixed-strings "$prefix" "$raw" >/dev/null; then
             return 0
         fi
     done
 
-    echo "FAIL: no SMBIOS OEM string for credential '$id' in the guest's DMI type #11 tables" >&2
+    echo "FAIL: no SMBIOS OEM string '$prefix...' in the guest's DMI type #11 tables" >&2
     return 1
 }
 
@@ -61,9 +62,34 @@ testcase_coco_no_host_tpm() {
 # Assert a credential handed to systemd-vmspawn --set-credential lands in the trusted bucket.
 #
 # SNP: creds should be delivered via the initrd cpio channel.
+# SNP+SVSM: via SMBIOS, which systemd-stub measures into the SVSM vTPM (see creds_smbios_measured).
 testcase_coco_creds_vmspawn() {
     assert_eq "$(systemd-creds --system cat "$COCO_CRED_TRUSTED_ID")" "$COCO_CRED_TRUSTED_VALUE"
     assert_not_in "$COCO_CRED_TRUSTED_ID" "$(</proc/cmdline)"
+}
+
+# Assert the guest's TPM is the vTPM of the SVSM running below it, not a host-emulated one: the
+# kernel registers the "tpm-svsm" platform device when the SVSM advertises the vTPM protocol, and the
+# TPM device must hang off it.
+testcase_coco_svsm_vtpm() {
+    test -e /sys/bus/platform/devices/tpm-svsm
+    assert_eq "$(basename "$(readlink -f /sys/class/tpm/tpm0/device)")" "tpm-svsm"
+    test -c /dev/tpmrm0
+    systemd-analyze has-tpm2
+}
+
+# Under an SVSM, SMBIOS credentials are trusted because systemd-stub measures the table into PCR 1 of
+# the vTPM. Assert that this is how the vmspawn credential got in: the OEM string is there, the boot
+# loader reported the measurement, and the event log carries the stub's type #11 event.
+testcase_coco_creds_smbios_measured() {
+    local pcr_smbios=/sys/firmware/efi/efivars/LoaderPcrSMBIOS-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
+
+    _coco_assert_smbios_injected "io.systemd.credential.binary:$COCO_CRED_TRUSTED_ID="
+    # EFI variable: 4 bytes of attributes, then the PCR index as a UTF-16 string.
+    assert_eq "$(tail -c +5 "$pcr_smbios" | tr -d '\0')" "1"
+    # The stub tags its SMBIOS events, which systemd-pcrlock decodes from the event log.
+    /usr/lib/systemd/systemd-pcrlock log --pcr=1 --json=short |
+        jq -e 'any(.log[]; .description == "systemd: SMBIOS OEM strings (type 11)")' >/dev/null
 }
 
 # Assert a credential passed on the kernel command line lands in the trusted bucket.
@@ -89,7 +115,7 @@ testcase_coco_creds_hostile_fwcfg() {
 # SMBIOS measurement zeroes the type #11 OEM strings before hashing), and import_credentials_smbios()
 # drops the strings in any confidential VM. Applies to SNP and TDX alike.
 testcase_coco_creds_hostile_smbios() {
-    _coco_assert_smbios_injected "$COCO_CRED_SMBIOS_ID"
+    _coco_assert_smbios_injected "io.systemd.credential:$COCO_CRED_SMBIOS_ID="
     _coco_assert_cred_absent "$COCO_CRED_SMBIOS_ID"
 }
 
@@ -97,45 +123,68 @@ testcase_coco_creds_hostile_smbios() {
 # delivered: boot-channel credentials import first and names are never overwritten, on every
 # platform. The probe proves the overwrite was attempted.
 testcase_coco_creds_hostile_shadow() {
-    _coco_assert_smbios_injected "$COCO_CRED_TRUSTED_ID"
+    _coco_assert_smbios_injected "io.systemd.credential:$COCO_CRED_TRUSTED_ID="
     assert_eq "$(systemd-creds --system cat "$COCO_CRED_TRUSTED_ID")" "$COCO_CRED_TRUSTED_VALUE"
 }
 
-# Drive the tsm report signer directly over its varlink socket: Sign() must return a hardware-signed
-# attestation report that embeds the digest it was asked to sign.
-testcase_coco_tsm_signer_varlink_snp() {
-    local signer=/run/systemd/report.sign/tsm
-    local nonce reply report
+# _coco_assert_tsm_clean
+# Assert the tsm report signer left no configfs entry behind: it acquires each report on a private
+# entry that must be removed when done, whether the request succeeded or not.
+_coco_assert_tsm_clean() {
+    test -d /sys/kernel/config/tsm/report
+    assert_eq "$(ls -A /sys/kernel/config/tsm/report)" ""
+}
+
+# The tsm report signer's contract on its local socket for a valid request: Sign() returns exactly
+# one signature. What the signature proves is checked host-side on the exported signed report.
+testcase_coco_tsm_signer_sign() {
+    local nonce
 
     # The signer socket is gated on ConditionSecurity=cvm, which must hold in a confidential guest.
     assert_eq "$(systemctl show -P ActiveState systemd-report-sign-tsm.socket)" "active"
 
-    # A fresh digest per boot, so the REPORT_DATA echo below can't be satisfied by stale data.
-    nonce="$(openssl rand -hex 32)"
-    reply="$(varlinkctl call "$signer" io.systemd.Report.Signer.Sign \
-        "{\"digest\":\"$nonce\",\"algorithm\":\"SHA256\"}")"
-
     # Without a configfs-tsm provider Sign() reports success with an empty signature set, so require
-    # exactly the one signature the SNP provider must produce.
-    assert_eq "$(jq '.data | length' <<<"$reply")" "1"
-    assert_eq "$(jq -r '.data[0].provider' <<<"$reply")" "sev_guest"
+    # exactly one signature.
+    nonce="$(openssl rand -hex 32)"
+    assert_eq "$(varlinkctl call /run/systemd/report.sign/tsm io.systemd.Report.Signer.Sign \
+        "{\"digest\":\"$nonce\",\"algorithm\":\"SHA256\"}" | jq '.data | length')" "1"
 
-    # Hex-encode the report so fields can be sliced by string offset (2 hex chars per byte).
-    report="$(jq -r '.data[0].outblob' <<<"$reply" | base64 -d | od -An -vtx1 | tr -d ' \n')"
-    assert_eq "$((${#report} / 2))" "1184"
-    # REPORT_DATA sits at byte offset 0x50: the digest, zero-padded to 64 bytes.
-    assert_eq "${report:2*0x50:64}" "$nonce"
-    assert_eq "${report:2*0x70:64}" "$(printf '00%.0s' {1..32})"
+    _coco_assert_tsm_clean
+}
 
-    # Unsupported digest algorithms and digest sizes must be rejected.
+# Unsupported digest algorithms and digest sizes must be rejected.
+testcase_coco_tsm_signer_rejects() {
+    local signer=/run/systemd/report.sign/tsm
+    local nonce
+
+    nonce="$(openssl rand -hex 32)"
     assert_fail varlinkctl call "$signer" io.systemd.Report.Signer.Sign \
         "{\"digest\":\"$nonce\",\"algorithm\":\"SHA384\"}"
     assert_fail varlinkctl call "$signer" io.systemd.Report.Signer.Sign \
         "{\"digest\":\"${nonce:0:32}\",\"algorithm\":\"SHA256\"}"
 
-    # Report acquisition works on a private configfs entry that must be removed when done.
-    test -d /sys/kernel/config/tsm/report
-    assert_eq "$(ls -A /sys/kernel/config/tsm/report)" ""
+    _coco_assert_tsm_clean
+}
+
+# The SVSM vTPM has no EK certificate, so systemd-tpm2-setup persists the EK at boot from the default
+# template. It must be the very EK the SVSM attests: the manifest of its vTPM service report, requested
+# straight from configfs-tsm so that the check doesn't depend on the tsm report signer.
+testcase_coco_svsm_ek() {
+    local entry=/sys/kernel/config/tsm/report/coco-svsm-ek
+    local tmp
+
+    tmp="$(mktemp -d)"
+    tpm2_readpublic -c 0x81010001 -f tpmt -o "$tmp/ek.pub" >/dev/null
+
+    mkdir "$entry"
+    echo svsm >"$entry/service_provider"
+    echo "$COCO_SVSM_VTPM_GUID" >"$entry/service_guid"
+    openssl rand 64 >"$entry/inblob"
+    cat "$entry/manifestblob" >"$tmp/manifest"
+    rmdir "$entry"
+
+    cmp "$tmp/manifest" "$tmp/ek.pub"
+    rm -rf "$tmp"
 }
 
 # Sign a real system report through the io.systemd.Report pipeline and export the result (the

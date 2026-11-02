@@ -20,6 +20,9 @@ COCO_GUEST_UNIT="coco-guest.service"
 # collected into WORKDIR/artifacts on the host (see lib.sh)
 COCO_ARTIFACT_SIGNED_REPORT="signed-report.seq"
 
+# GUID of the SVSM's vTPM attestation service, carried by tsm signatures from a service report
+COCO_SVSM_VTPM_GUID="c476f1eb-0123-45a5-9641-b4e7dde5bfe3"
+
 # Credentials by channel
 COCO_CRED_TRUSTED_ID="coco.trusted"
 COCO_CRED_TRUSTED_VALUE="trusted-via-vmspawn"
