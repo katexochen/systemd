@@ -53,6 +53,14 @@
     certificate (<literal>auxblob</literal>) and manifest (<literal>manifestblob</literal>) data. A verifier
     selects the appropriate validation logic based on the provider field.</para>
 
+    <para>On AMD SEV-SNP guests running under a Secure VM Service Module (SVSM), the service instead requests
+    the SVSM's vTPM service attestation report. Its manifest (<literal>manifestblob</literal>) is the public
+    area of the vTPM's endorsement key, and the report's data field is the SHA-512 hash of the
+    <literal>inblob</literal> followed by the manifest, binding the vTPM to the attestation report. Such
+    signatures additionally carry the <literal>serviceProvider</literal> and <literal>serviceGuid</literal>
+    fields. If an SVSM is present but the service report cannot be acquired, signing fails rather than
+    falling back to a plain report.</para>
+
     <para>This backend is only functional inside a confidential virtual machine whose kernel exposes the
     configfs-TSM interface (such as AMD SEV-SNP or Intel TDX guests). On systems where the interface is
     unavailable the signing operation is reported as unsupported and the mechanism is skipped. The service
