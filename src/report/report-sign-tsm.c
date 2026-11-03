@@ -45,6 +45,7 @@ static int vl_method_sign(
 
         _cleanup_(sign_parameters_done) SignParameters sp = {};
         _cleanup_(tsm_report_freep) TsmReport *report = NULL;
+        const TsmReportOptions *options = NULL;
         int r;
 
         assert(link);
@@ -61,7 +62,22 @@ static int vl_method_sign(
         uint8_t report_data[TSM_REPORT_DATA_SIZE] = {};
         memcpy(report_data, sp.digest.iov_base, sp.digest.iov_len);
 
-        r = tsm_report_acquire(&IOVEC_MAKE(report_data, sizeof report_data), /* options= */ NULL, &report);
+        /* Under an SVSM, prefer the vTPM service report, which binds the vTPM EK to the SNP report.
+         * Fall back to a plain report otherwise. */
+
+        static const TsmReportOptions svsm_options = {
+                .service_provider = TSM_SERVICE_PROVIDER_SVSM,
+                .service_guid = TSM_SVSM_SERVICE_VTPM,
+                .service_guid_set = true,
+        };
+        options = &svsm_options;
+        r = tsm_report_acquire(&IOVEC_MAKE(report_data, sizeof report_data), options, &report);
+        if (r == -EPROTONOSUPPORT) {
+                log_debug_errno(r, "No SVSM service attestation available, using plain report: %m");
+                static const TsmReportOptions default_options = {};
+                options = &default_options;
+                r = tsm_report_acquire(&IOVEC_MAKE(report_data, sizeof report_data), options, &report);
+        }
         if (IN_SET(r, -EOPNOTSUPP, -ENXIO))
                 /* Returning an error will fail the whole report signing, so we return
                  * no signature instead which will be ignored by the aggregator. */
@@ -79,7 +95,11 @@ static int vl_method_sign(
                                                                         SD_JSON_BUILD_PAIR_CONDITION(iovec_is_set(&report->auxblob),
                                                                                         "auxblob", JSON_BUILD_IOVEC_BASE64(&report->auxblob)),
                                                                         SD_JSON_BUILD_PAIR_CONDITION(iovec_is_set(&report->manifestblob),
-                                                                                        "manifestblob", JSON_BUILD_IOVEC_BASE64(&report->manifestblob))))));
+                                                                                        "manifestblob", JSON_BUILD_IOVEC_BASE64(&report->manifestblob)),
+                                                                        SD_JSON_BUILD_PAIR_CONDITION(!!options->service_provider,
+                                                                                        "serviceProvider", SD_JSON_BUILD_STRING(options->service_provider)),
+                                                                        SD_JSON_BUILD_PAIR_CONDITION(options->service_guid_set,
+                                                                                        "serviceGuid", SD_JSON_BUILD_UUID(options->service_guid))))));
 }
 
 int report_server_setup(sd_varlink_server *server) {
