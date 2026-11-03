@@ -62,6 +62,7 @@ static int tsm_report_fill(
         _cleanup_close_ int inblob_fd = -EBADF;
         _cleanup_(tsm_report_freep) TsmReport *report = NULL;
         _cleanup_free_ char *floor = NULL;
+        static const TsmReportOptions defaults = {};
         bool has_privlevel = false, has_floor = false;
         unsigned privlevel = 0, privlevel_floor = 0;
         int r;
@@ -69,6 +70,19 @@ static int tsm_report_fill(
         assert(entry_fd >= 0);
         assert(report_data);
         assert(ret);
+
+        if (!options)
+                options = &defaults;
+
+        if (options->privlevel_set && options->service_provider)
+                return log_debug_errno(SYNTHETIC_ERRNO(EINVAL),
+                                       "'privlevel' and 'service_provider' are mutually exclusive.");
+        if (options->service_guid_set && !options->service_provider)
+                return log_debug_errno(SYNTHETIC_ERRNO(EINVAL),
+                                       "'service_guid' requires 'service_provider' to be set.");
+        if (options->service_manifest_version_set && !options->service_guid_set)
+                return log_debug_errno(SYNTHETIC_ERRNO(EINVAL),
+                                       "'service_manifest_version' requires 'service_guid' to be set.");
 
         r = read_one_line_file_at(entry_fd, "privlevel_floor", &floor);
         if (r >= 0) {
@@ -80,7 +94,7 @@ static int tsm_report_fill(
                 return log_debug_errno(r, "Failed to read 'privlevel_floor' attribute: %m");
         /* -ENOENT: provider has no privlevel concept, leave it unset. */
 
-        if (options && options->privlevel_set) {
+        if (options->privlevel_set) {
                 if (!has_floor)
                         return log_debug_errno(SYNTHETIC_ERRNO(EINVAL),
                                                "TSM provider does not support 'privlevel'.");
@@ -106,7 +120,38 @@ static int tsm_report_fill(
 
         /* Write inputs. Each successful option write bumps the kernel's generation by one. */
 
-        if (has_privlevel) {
+        if (options->service_provider) {
+                r = write_string_file_at(entry_fd, "service_provider",
+                                         options->service_provider,
+                                         WRITE_STRING_FILE_DISABLE_BUFFER);
+                if (r == -ENOENT)
+                        return log_debug_errno(SYNTHETIC_ERRNO(EPROTONOSUPPORT),
+                                               "TSM provider does not support service attestation.");
+                if (r < 0)
+                        return log_debug_errno(r, "Failed to write 'service_provider' attribute: %m");
+                generation++;
+
+                if (options->service_guid_set) {
+                        r = write_string_file_at(entry_fd, "service_guid",
+                                                 SD_ID128_TO_UUID_STRING(options->service_guid),
+                                                 WRITE_STRING_FILE_DISABLE_BUFFER);
+                        if (r < 0)
+                                return log_debug_errno(r, "Failed to write 'service_guid' attribute: %m");
+                        generation++;
+                }
+
+                if (options->service_manifest_version_set) {
+                        char manifest_version_buf[DECIMAL_STR_MAX(unsigned)];
+                        xsprintf(manifest_version_buf, "%u", options->service_manifest_version);
+
+                        r = write_string_file_at(entry_fd, "service_manifest_version",
+                                                 manifest_version_buf,
+                                                 WRITE_STRING_FILE_DISABLE_BUFFER);
+                        if (r < 0)
+                                return log_debug_errno(r, "Failed to write 'service_manifest_version' attribute: %m");
+                        generation++;
+                }
+        } else if (has_privlevel) {
                 char privlvl_buf[DECIMAL_STR_MAX(unsigned)];
                 xsprintf(privlvl_buf, "%u", privlevel);
 
