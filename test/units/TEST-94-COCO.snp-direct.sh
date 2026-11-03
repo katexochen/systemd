@@ -39,17 +39,18 @@ at_exit() {
 }
 trap at_exit EXIT
 
-# General test case for SNP direct boot, covers:
-#
-# - detect_virt: systemd-detect-virt --cvm detects SNP as the CVM type
-# - no_host_tpm: vmspawn attached no TPM by default
-# - creds_vmspawn: credential transport by vmspawn is working (via initrd for SNP)
-# - creds_cmdline: credential transport via cmdline is working (cmdline is measured on SNP)
-# - tsm_signer_sign: the tsm report signer returns exactly one signature
-# - tsm_signer_rejects: the tsm report signer rejects malformed requests
-# - report_pipeline: signing a report via io.systemd.Report; the result is verified below, host-side
+# General test case for SNP direct boot.
+TESTCASES=(
+    detect_virt         # systemd-detect-virt --cvm detects SNP as the CVM type
+    no_host_tpm         # vmspawn attached no TPM by default
+    creds_vmspawn       # credential transport by vmspawn is working (via initrd for SNP)
+    creds_cmdline       # credential transport via cmdline is working (cmdline is measured on SNP)
+    tsm_signer_sign     # the tsm report signer returns exactly one signature
+    tsm_signer_rejects  # the tsm report signer rejects malformed requests
+    report_pipeline     # signing a report via io.systemd.Report; the result is verified below, host-side
+)
 vmspawn_boot_coco "$MACHINE-honest" "$COCO_TYPE" "$WORKDIR/honest" \
-    'detect_virt no_host_tpm creds_vmspawn creds_cmdline tsm_signer_sign tsm_signer_rejects report_pipeline' \
+    "${TESTCASES[*]}" \
     --image="$IMAGE_DIR/image.raw" \
     --firmware="$FIRMWARE" \
     --linux="$IMAGE_DIR/image.vmlinuz" \
@@ -63,9 +64,14 @@ test -s "$WORKDIR/honest/artifacts/$COCO_ARTIFACT_SIGNED_REPORT"
 coco_verify_snp_signed_report "$WORKDIR/honest/artifacts/$COCO_ARTIFACT_SIGNED_REPORT" "$WORKDIR/honest"
 echo "SEV-SNP direct-boot guest correctly reported confidential virtualization and trusted credentials"
 
-# Offensive test:
-#
-# - creds_hostile_*: ensure the guest isn't tricked into consuming untrusted/unmeasured credentials.
+# Offensive test: ensure the guest isn't tricked into consuming untrusted/unmeasured credentials.
+TESTCASES=(
+    detect_virt           # systemd-detect-virt --cvm detects SNP as the CVM type
+    creds_vmspawn         # the trusted credential still arrives via vmspawn
+    creds_hostile_fwcfg   # unmeasured fw_cfg credentials are ignored
+    creds_hostile_smbios  # unmeasured SMBIOS credentials are ignored
+    creds_hostile_shadow  # an SMBIOS credential can't overwrite a trusted one of the same name
+)
 QEMU_EXTRA=(
     -smbios "type=11,value=io.systemd.credential:$COCO_CRED_SMBIOS_ID=$COCO_CRED_SMBIOS_VALUE"
     -smbios "type=11,value=io.systemd.credential:$COCO_CRED_TRUSTED_ID=$COCO_CRED_SMBIOS_VALUE"
@@ -74,7 +80,7 @@ QEMU_EXTRA=(
 
 SYSTEMD_VMSPAWN_QEMU_EXTRA="${QEMU_EXTRA[*]}" \
 vmspawn_boot_coco "$MACHINE-hostile" "$COCO_TYPE" "$WORKDIR/hostile" \
-    'detect_virt creds_vmspawn creds_hostile_fwcfg creds_hostile_smbios creds_hostile_shadow' \
+    "${TESTCASES[*]}" \
     --image="$IMAGE_DIR/image.raw" \
     --firmware="$FIRMWARE" \
     --linux="$IMAGE_DIR/image.vmlinuz" \
