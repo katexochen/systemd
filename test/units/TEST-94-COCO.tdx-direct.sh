@@ -37,14 +37,15 @@ trap at_exit EXIT
 
 # Honest host, direct boot of a plain kernel image. No boot loader runs, so vmspawn delivers
 # credentials via the initrd cpio, which the Linux EFI stub measures into RTMR 2 together with the
-# command line. Covers:
-#
-# - detect_virt: systemd-detect-virt --cvm detects TDX as the CVM type
-# - no_host_tpm: vmspawn attached no TPM by default
-# - creds_vmspawn: credential transport by vmspawn is working (via the initrd cpio here)
-# - creds_cmdline: credential transport via the kernel command line is working (measured into RTMR 2)
+# command line.
+TESTCASES=(
+    detect_virt    # systemd-detect-virt --cvm detects TDX as the CVM type
+    no_host_tpm    # vmspawn attached no TPM by default
+    creds_vmspawn  # credential transport by vmspawn is working (via the initrd cpio here)
+    creds_cmdline  # credential transport via the kernel command line is working (measured into RTMR 2)
+)
 vmspawn_boot_coco "$MACHINE-honest" "$COCO_TYPE" "$WORKDIR/honest" \
-    'detect_virt no_host_tpm creds_vmspawn creds_cmdline' \
+    "${TESTCASES[*]}" \
     --image="$IMAGE_DIR/image.raw" \
     --firmware="$FIRMWARE" \
     --linux="$IMAGE_DIR/image.vmlinuz" \
@@ -56,9 +57,14 @@ echo "TDX direct-boot guest correctly reported confidential virtualization and t
 
 # Hostile host. Without a boot loader nobody measured the SMBIOS table (the firmware's own SMBIOS
 # measurement zeroes the OEM strings), and fw_cfg is never measured, so the guest must ignore
-# credentials injected through either channel. Covers:
-#
-# - creds_hostile_*: ensure the guest isn't tricked into consuming unmeasured credentials.
+# credentials injected through either channel.
+TESTCASES=(
+    detect_virt           # systemd-detect-virt --cvm detects TDX as the CVM type
+    creds_vmspawn         # the trusted credential still arrives via vmspawn
+    creds_hostile_fwcfg   # unmeasured fw_cfg credentials are ignored
+    creds_hostile_smbios  # unmeasured SMBIOS credentials are ignored
+    creds_hostile_shadow  # an SMBIOS credential can't overwrite a trusted one of the same name
+)
 QEMU_EXTRA=(
     -smbios "type=11,value=io.systemd.credential:$COCO_CRED_SMBIOS_ID=$COCO_CRED_SMBIOS_VALUE"
     -smbios "type=11,value=io.systemd.credential:$COCO_CRED_TRUSTED_ID=$COCO_CRED_SMBIOS_VALUE"
@@ -67,7 +73,7 @@ QEMU_EXTRA=(
 
 SYSTEMD_VMSPAWN_QEMU_EXTRA="${QEMU_EXTRA[*]}" \
 vmspawn_boot_coco "$MACHINE-hostile" "$COCO_TYPE" "$WORKDIR/hostile" \
-    'detect_virt creds_vmspawn creds_hostile_fwcfg creds_hostile_smbios creds_hostile_shadow' \
+    "${TESTCASES[*]}" \
     --image="$IMAGE_DIR/image.raw" \
     --firmware="$FIRMWARE" \
     --linux="$IMAGE_DIR/image.vmlinuz" \

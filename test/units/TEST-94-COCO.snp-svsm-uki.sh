@@ -48,21 +48,22 @@ QEMU_EXTRA=(
 )
 
 # The guest boots the UKI from the ESP; vmspawn delivers credentials via SMBIOS, which systemd-stub
-# measures into the vTPM. vmspawn picks up the planes QEMU via PATH. Covers:
-#
-# - detect_virt: systemd-detect-virt --cvm detects SNP as the CVM type
-# - svsm_vtpm: the guest's TPM is the SVSM vTPM
-# - creds_vmspawn: credential transport by vmspawn is working (via SMBIOS here)
-# - creds_smbios_measured: the SMBIOS table carrying it was measured by the boot loader
-# - creds_hostile_fwcfg: unmeasured fw_cfg credentials are still ignored
-# - tsm_signer_sign: the tsm report signer returns exactly one signature
-# - tsm_signer_rejects: the tsm report signer rejects malformed requests
-# - svsm_ek: the EK persisted at boot is the one the SVSM attests in its vTPM service report
-# - report_pipeline: signing a report via io.systemd.Report; the result is verified below, host-side
+# measures into the vTPM. vmspawn picks up the planes QEMU via PATH.
+TESTCASES=(
+    detect_virt            # systemd-detect-virt --cvm detects SNP as the CVM type
+    svsm_vtpm              # the guest's TPM is the SVSM vTPM
+    creds_vmspawn          # credential transport by vmspawn is working (via SMBIOS here)
+    creds_smbios_measured  # the SMBIOS table carrying it was measured by the boot loader
+    creds_hostile_fwcfg    # unmeasured fw_cfg credentials are still ignored
+    tsm_signer_sign        # the tsm report signer returns exactly one signature
+    tsm_signer_rejects     # the tsm report signer rejects malformed requests
+    svsm_ek                # the EK persisted at boot is the one the SVSM attests in its vTPM service report
+    report_pipeline        # signing a report via io.systemd.Report; the result is verified below, host-side
+)
 PATH="$QEMU_COCONUT_BIN:$PATH" \
 SYSTEMD_VMSPAWN_QEMU_EXTRA="${QEMU_EXTRA[*]}" \
 vmspawn_boot_coco "$MACHINE" "$COCO_TYPE" "$WORKDIR" \
-    'detect_virt svsm_vtpm creds_vmspawn creds_smbios_measured creds_hostile_fwcfg tsm_signer_sign tsm_signer_rejects svsm_ek report_pipeline' \
+    "${TESTCASES[*]}" \
     --image="$IMAGE_DIR/image.raw" \
     --firmware="$FIRMWARE" \
     --set-credential="$COCO_CRED_TRUSTED_ID:$COCO_CRED_TRUSTED_VALUE"
