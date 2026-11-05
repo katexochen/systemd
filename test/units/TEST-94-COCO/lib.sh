@@ -25,7 +25,8 @@ _COCO_RESULT_PORT=4321
 # _coco_guest_unit COCO_TYPE UNITS_DIR TESTCASES
 # Emit the one-shot unit that runs the guest test runner: passes the coco type, result port and
 # the requested checks via the environment, and relays the aggregate verdict via
-# SuccessAction/EXIT_STATUS.
+# SuccessAction/EXIT_STATUS. Its output, including the trace and why an assertion failed, goes to
+# the console as well, which the host dumps when the guest fails.
 _coco_guest_unit() {
     local coco_type="${1:?}" units_dir="${2:?}" testcases="${3:?}"
     cat <<EOF
@@ -38,6 +39,7 @@ FailureAction=exit
 FailureActionExitStatus=1
 [Service]
 Type=oneshot
+StandardOutput=journal+console
 Environment=COCO_TYPE=$coco_type
 Environment=COCO_RESULT_PORT=$_COCO_RESULT_PORT
 Environment="COCO_TESTCASES=$testcases"
