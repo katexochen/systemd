@@ -39,6 +39,7 @@ typedef enum TestMapping {
         MAPPING_MEMORY,           /* mapped into memory, loaded via -bios */
         MAPPING_MEMORY_UEFI_VARS, /* mapped into memory, with a template for QEMU's UEFI variable store */
         MAPPING_KERNEL,           /* loaded like a Linux kernel */
+        MAPPING_IGVM,             /* IGVM file, loaded via an igvm-cfg object */
 } TestMapping;
 
 static void write_descriptor(
@@ -60,12 +61,13 @@ static void write_descriptor(
 
         bool flash = IN_SET(mapping, MAPPING_FLASH_SPLIT, MAPPING_FLASH_STATELESS, MAPPING_FLASH_COMBINED);
         bool memory = IN_SET(mapping, MAPPING_MEMORY, MAPPING_MEMORY_UEFI_VARS);
+        const char *device = flash ? "flash" : memory ? "memory" : mapping == MAPPING_IGVM ? "igvm" : "kernel";
 
         ASSERT_OK(sd_json_buildo(&v,
                         SD_JSON_BUILD_PAIR_STRING("description", name),
                         SD_JSON_BUILD_PAIR_STRV("interface-types", interface_types ?: STRV_MAKE("uefi")),
                         SD_JSON_BUILD_PAIR("mapping", SD_JSON_BUILD_OBJECT(
-                                SD_JSON_BUILD_PAIR_STRING("device", flash ? "flash" : memory ? "memory" : "kernel"),
+                                SD_JSON_BUILD_PAIR_STRING("device", device),
                                 SD_JSON_BUILD_PAIR_CONDITION(!flash, "filename", SD_JSON_BUILD_STRING(executable)),
                                 SD_JSON_BUILD_PAIR_CONDITION(mapping == MAPPING_MEMORY_UEFI_VARS, "uefi-vars", SD_JSON_BUILD_OBJECT(
                                         SD_JSON_BUILD_PAIR_STRING("template", "/test/vars.json"))),
@@ -115,6 +117,9 @@ static const TestDescriptor test_descriptors[] = {
         { "memory",                  MAPPING_MEMORY                                                             },
         { "memory-secure-boot",      MAPPING_MEMORY,           .features = STRV_MAKE_CONST("secure-boot")       },
         { "memory-host-uefi-vars",   MAPPING_MEMORY_UEFI_VARS, .features = STRV_MAKE_CONST("host-uefi-vars")    },
+        { "svsm",                    MAPPING_IGVM,             .interface_types = STRV_MAKE_CONST("uefi", "svsm") },
+        { "svsm-secure-boot",        MAPPING_IGVM,             .interface_types = STRV_MAKE_CONST("uefi", "svsm"),
+                                                               .features = STRV_MAKE_CONST("secure-boot")       },
 
         /* Never found. Each differs from one of the above in a single property, which rules it out. */
         { "bios",                    MAPPING_FLASH_SPLIT,      .interface_types = STRV_MAKE_CONST("bios")       },
@@ -126,6 +131,9 @@ static const TestDescriptor test_descriptors[] = {
                                      MAPPING_MEMORY,           .features = STRV_MAKE_CONST("host-uefi-vars")    },
         { "flash-stateless-host-uefi-vars",
                                      MAPPING_FLASH_STATELESS,  .features = STRV_MAKE_CONST("host-uefi-vars")    },
+        /* IGVM is only supported to load an SVSM, and an SVSM only via IGVM. */
+        { "igvm-without-svsm",       MAPPING_IGVM                                                               },
+        { "svsm-without-igvm",       MAPPING_MEMORY,           .interface_types = STRV_MAKE_CONST("uefi", "svsm") },
 };
 
 #define TEST_FLAGS_COCO (FIND_OVMF_STATELESS|FIND_OVMF_REQUIRE_RAW) /* as vmspawn searches under --coco= */
@@ -149,18 +157,35 @@ static const TestSearch test_searches[] = {
         {
                 .description      = "stateless firmware",
                 .flags            = FIND_OVMF_STATELESS,
-                .expect           = STRV_MAKE_CONST("flash-stateless", "flash-stateless-qcow2", "memory", "memory-secure-boot"),
+                .expect           = STRV_MAKE_CONST("flash-stateless", "flash-stateless-qcow2", "memory", "memory-secure-boot",
+                                                    "svsm", "svsm-secure-boot"),
         },
         {
                 .description      = "stateless firmware in raw format",
                 .flags            = TEST_FLAGS_COCO,
-                .expect           = STRV_MAKE_CONST("flash-stateless", "memory", "memory-secure-boot"),
+                .expect           = STRV_MAKE_CONST("flash-stateless", "memory", "memory-secure-boot", "svsm", "svsm-secure-boot"),
         },
         {
                 .description      = "stateless firmware in raw format, with Secure Boot",
                 .flags            = TEST_FLAGS_COCO,
                 .include          = STRV_MAKE_CONST("secure-boot"),
-                .expect           = STRV_MAKE_CONST("memory-secure-boot"),
+                .expect           = STRV_MAKE_CONST("memory-secure-boot", "svsm-secure-boot"),
+        },
+        {
+                .description      = "stateless firmware in raw format, with an SVSM",
+                .flags            = TEST_FLAGS_COCO|FIND_OVMF_SVSM,
+                .expect           = STRV_MAKE_CONST("svsm", "svsm-secure-boot"),
+        },
+        {
+                .description      = "stateless firmware in raw format, without an SVSM",
+                .flags            = TEST_FLAGS_COCO|FIND_OVMF_NO_SVSM,
+                .expect           = STRV_MAKE_CONST("flash-stateless", "memory", "memory-secure-boot"),
+        },
+        {
+                .description      = "stateless firmware in raw format, with an SVSM and Secure Boot",
+                .flags            = TEST_FLAGS_COCO|FIND_OVMF_SVSM,
+                .include          = STRV_MAKE_CONST("secure-boot"),
+                .expect           = STRV_MAKE_CONST("svsm-secure-boot"),
         },
         {
                 .description      = "firmware with a variable store and Secure Boot",
@@ -192,7 +217,8 @@ static const TestSearch test_searches[] = {
 
 /* Descriptors that describe stateless firmware, as told by ovmf_config_is_stateless(). */
 static const char * const *test_descriptors_stateless = STRV_MAKE_CONST(
-                "flash-stateless", "flash-stateless-qcow2", "memory", "memory-secure-boot");
+                "flash-stateless", "flash-stateless-qcow2", "memory", "memory-secure-boot", "svsm", "svsm-secure-boot",
+                "igvm-without-svsm", "svsm-without-igvm");
 
 static const TestDescriptor* test_descriptor_find(const char *name) {
         FOREACH_ELEMENT(d, test_descriptors)
@@ -292,6 +318,8 @@ TEST(load_ovmf_config) {
                 ASSERT_STREQ(config->uefi_vars_template, uefi_vars ? "/test/vars.json" : NULL);
 
                 ASSERT_EQ(ovmf_config_is_stateless(config), strv_contains((char**) test_descriptors_stateless, d->name));
+                ASSERT_EQ(ovmf_config_is_svsm(config), strv_contains((char**) d->interface_types, "svsm"));
+                ASSERT_EQ(ovmf_config_is_igvm(config), d->mapping == MAPPING_IGVM);
                 ASSERT_EQ(ovmf_config_has_host_uefi_vars(config), strv_contains((char**) d->features, "host-uefi-vars"));
                 ASSERT_EQ(ovmf_config_has_feature(config, "secure-boot"), strv_contains((char**) d->features, "secure-boot"));
         }
