@@ -35,6 +35,7 @@ _arguments \
     '--secure-boot=[Enable searching for firmware supporting SecureBoot]:boolean:(yes no auto)' \
     '--firmware=[Select firmware to use]:firmware: _systemd-vmspawn_mode_or_path auto uefi bios none list describe' \
     '--firmware-features=[Require/exclude specific firmware features]: : _message "firmware features"' \
+    '--firmware-interface=[Select firmware by the interface it provides]:interface:(auto uefi svsm)' \
     '--coco=[Run the guest as a confidential VM]:mode:(no sev-snp tdx)' \
     '(--network-tap -n)'{-n,--network-tap}'[Create a TAP device for networking]' \
     '--network-user-mode[Use user mode networking]' \

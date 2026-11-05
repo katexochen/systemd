@@ -181,6 +181,8 @@ typedef enum FindOvmfConfigFlags {
                                          * template, or firmware with a template for a host-side UEFI
                                          * variable store */
         FIND_OVMF_REQUIRE_RAW = 1 << 1, /* skip non-raw firmware executables (-bios can't load qcow2) */
+        FIND_OVMF_SVSM        = 1 << 2, /* only select firmware with the "svsm" interface type */
+        FIND_OVMF_NO_SVSM     = 1 << 3, /* skip firmware with the "svsm" interface type */
 } FindOvmfConfigFlags;
 
 int list_eligible_ovmf_config(Set *features_include, Set *features_exclude, FindOvmfConfigFlags flags, char ***ret_eligible, OvmfConfig **ret_first, sd_json_variant **ret_first_json);

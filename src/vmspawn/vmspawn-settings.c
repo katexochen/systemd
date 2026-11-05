@@ -39,6 +39,14 @@ static const char *const firmware_table[_FIRMWARE_MAX] = {
 
 DEFINE_STRING_TABLE_LOOKUP(firmware, Firmware);
 
+static const char *const firmware_interface_table[_FIRMWARE_INTERFACE_MAX] = {
+        [FIRMWARE_INTERFACE_AUTO] = "auto",
+        [FIRMWARE_INTERFACE_UEFI] = "uefi",
+        [FIRMWARE_INTERFACE_SVSM] = "svsm",
+};
+
+DEFINE_STRING_TABLE_LOOKUP(firmware_interface, FirmwareInterface);
+
 static const char *const confidential_computing_table[_COCO_MAX] = {
         [COCO_NO]      = "no",
         [COCO_SEV_SNP] = "sev-snp",

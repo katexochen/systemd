@@ -373,10 +373,11 @@
           is specified, the UEFI firmware definition files eligible for selection are listed in order of
           preference, and the program exits. If the special string <literal>describe</literal> is specified,
           the UEFI firmware that would be selected is printed and the program exits. Both take
-          <option>--firmware-features=</option> and <option>--secure-boot=</option> into account.
-          <literal>list</literal> also takes <option>--coco=</option> into account, while
-          <literal>describe</literal> is refused with it, as firmware is not selected automatically for
-          confidential VMs. If an empty string is specified, the option is reset to its default.</para>
+          <option>--firmware-features=</option>, <option>--firmware-interface=</option> and
+          <option>--secure-boot=</option> into account. <literal>list</literal> also takes
+          <option>--coco=</option> into account, while <literal>describe</literal> is refused with it, as
+          firmware is not selected automatically for confidential VMs. If an empty string is specified, the
+          option is reset to its default.</para>
 
           <xi:include href="version-info.xml" xpointer="v256"/></listitem>
         </varlistentry>
@@ -395,6 +396,18 @@
           firmware features.</para>
 
           <xi:include href="version-info.xml" xpointer="v261"/></listitem>
+        </varlistentry>
+
+        <varlistentry>
+          <term><option>--firmware-interface=</option></term>
+
+          <listitem><para>Selects firmware by the interface it provides. Takes one of
+          <literal>auto</literal>, <literal>uefi</literal> or <literal>svsm</literal>. Defaults to
+          <literal>auto</literal>, which doesn't restrict the selection. <literal>uefi</literal> skips firmware
+          running a Secure VM Service Module (SVSM) below the guest, <literal>svsm</literal> selects only such
+          firmware and requires <option>--coco=sev-snp</option>.</para>
+
+          <xi:include href="version-info.xml" xpointer="v263"/></listitem>
         </varlistentry>
 
         <varlistentry>
