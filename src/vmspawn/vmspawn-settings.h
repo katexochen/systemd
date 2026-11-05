@@ -45,6 +45,14 @@ typedef enum Firmware {
         _FIRMWARE_INVALID = -EINVAL,
 } Firmware;
 
+typedef enum FirmwareInterface {
+        FIRMWARE_INTERFACE_AUTO,
+        FIRMWARE_INTERFACE_UEFI,
+        FIRMWARE_INTERFACE_SVSM,
+        _FIRMWARE_INTERFACE_MAX,
+        _FIRMWARE_INTERFACE_INVALID = -EINVAL,
+} FirmwareInterface;
+
 typedef enum ConfidentialComputing {
         COCO_NO,
         COCO_SEV_SNP,
@@ -66,4 +74,5 @@ typedef enum SettingsMask {
 DECLARE_STRING_TABLE_LOOKUP(console_mode, ConsoleMode);
 DECLARE_STRING_TABLE_LOOKUP(console_transport, ConsoleTransport);
 DECLARE_STRING_TABLE_LOOKUP(firmware, Firmware);
+DECLARE_STRING_TABLE_LOOKUP(firmware_interface, FirmwareInterface);
 DECLARE_STRING_TABLE_LOOKUP(confidential_computing, ConfidentialComputing);

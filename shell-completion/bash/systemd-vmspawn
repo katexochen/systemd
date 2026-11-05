@@ -35,6 +35,7 @@ _systemd_vmspawn() {
         [TRISTATE]='--register --secure-boot'
         [FIRMWARE]='--firmware'
         [FIRMWARE_FEATURES]='--firmware-features'
+        [FIRMWARE_INTERFACE]='--firmware-interface'
         [BIND]='--bind --bind-ro'
         [SSH_KEY]='--ssh-key'
         [CONSOLE]='--console'
@@ -58,6 +59,8 @@ _systemd_vmspawn() {
         comps="list describe $(compgen -f -- "$cur" )"
     elif __contains_word "$prev" ${OPTS[FIRMWARE_FEATURES]}; then
         comps='list'
+    elif __contains_word "$prev" ${OPTS[FIRMWARE_INTERFACE]}; then
+        comps='auto uefi svsm'
     elif __contains_word "$prev" ${OPTS[BIND]}; then
         compopt -o nospace -o filenames
         comps=$(compgen -f -- "${cur}" )

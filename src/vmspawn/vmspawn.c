@@ -176,6 +176,7 @@ static bool arg_firmware_describe = false;
 static bool arg_firmware_list = false;
 static Set *arg_firmware_features_include = NULL;
 static Set *arg_firmware_features_exclude = NULL;
+static FirmwareInterface arg_firmware_interface = FIRMWARE_INTERFACE_AUTO;
 static ConfidentialComputing arg_confidential_computing = COCO_NO;
 static char *arg_forward_journal = NULL;
 static uint64_t arg_forward_journal_max_use = UINT64_MAX;
@@ -616,6 +617,20 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
                 }
 
+                OPTION_LONG("firmware-interface", "auto|uefi|svsm",
+                            "Select firmware by the interface it provides"): {
+                        if (isempty(opts.arg)) {
+                                arg_firmware_interface = FIRMWARE_INTERFACE_AUTO;
+                                break;
+                        }
+
+                        FirmwareInterface fi = firmware_interface_from_string(opts.arg);
+                        if (fi < 0)
+                                return log_error_errno(fi, "Unknown --firmware-interface= value: %s", opts.arg);
+                        arg_firmware_interface = fi;
+                        break;
+                }
+
                 OPTION_LONG("coco", "no|sev-snp|tdx", "Run the guest as a confidential VM"): {
                         ConfidentialComputing cc = confidential_computing_from_string(opts.arg);
                         if (cc < 0)
@@ -964,6 +979,10 @@ static int parse_argv(int argc, char *argv[]) {
                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
                                                        "--ephemeral only supports read-only --extra-drive= (prefix ro: or disk type scsi-cd), not '%s' with disk type %s.",
                                                        d->path, disk_type_to_string(extra_drive_disk_type(d)));
+
+        /* Checked here rather than in verify_arguments() so that --firmware=list honors it too. */
+        if (arg_firmware_interface == FIRMWARE_INTERFACE_SVSM && arg_confidential_computing != COCO_SEV_SNP)
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "--firmware-interface=svsm requires --coco=sev-snp.");
 
         if (arg_uid_shift != UID_INVALID && !arg_directory)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "--private-users= is only supported in combination with --directory=.");
@@ -2758,7 +2777,13 @@ static int ovmf_search_criteria(FindOvmfConfigFlags *ret_flags) {
                 }
         }
 
-        *ret_flags = arg_confidential_computing != COCO_NO ? FIND_OVMF_STATELESS|FIND_OVMF_REQUIRE_RAW : 0;
+        FindOvmfConfigFlags flags = arg_confidential_computing != COCO_NO ? FIND_OVMF_STATELESS|FIND_OVMF_REQUIRE_RAW : 0;
+        if (arg_firmware_interface == FIRMWARE_INTERFACE_UEFI)
+                flags |= FIND_OVMF_NO_SVSM;
+        else if (arg_firmware_interface == FIRMWARE_INTERFACE_SVSM)
+                flags |= FIND_OVMF_SVSM;
+
+        *ret_flags = flags;
         return 0;
 }
 

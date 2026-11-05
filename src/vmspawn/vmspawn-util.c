@@ -532,6 +532,27 @@ static bool firmware_data_is_eligible(
                 return false;
         }
 
+        /* vmspawn can only load an SVSM via IGVM, and supports IGVM firmware for nothing else. */
+        bool svsm = strv_contains(fwd->interface_types, "svsm");
+        bool igvm = streq(fwd->device, "igvm");
+        if (svsm && !igvm) {
+                log_debug("Skipping %s, SVSM firmware is only supported in IGVM format.", file);
+                return false;
+        }
+        if (igvm && !svsm) {
+                log_debug("Skipping %s, IGVM firmware is only supported with an SVSM.", file);
+                return false;
+        }
+
+        if (FLAGS_SET(flags, FIND_OVMF_SVSM) && !svsm) {
+                log_debug("Skipping %s, firmware lacks the 'svsm' interface type.", file);
+                return false;
+        }
+        if (FLAGS_SET(flags, FIND_OVMF_NO_SVSM) && svsm) {
+                log_debug("Skipping %s, firmware has the 'svsm' interface type.", file);
+                return false;
+        }
+
         if (FLAGS_SET(flags, FIND_OVMF_STATELESS)) {
                 if (!firmware_is_stateless(fwd->device, fwd->mode, fwd->features)) {
                         log_debug("Skipping %s, firmware is not stateless.", file);
