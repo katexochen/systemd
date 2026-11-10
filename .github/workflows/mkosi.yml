@@ -92,7 +92,7 @@ jobs:
           #   libc: musl
           #   skip: TEST-92-TPM2-SWTPM
           - distro: fedora
-            release: "44"
+            release: rawhide
             runner: coco-snp
             coco: 1
             tests: TEST-94-COCO
