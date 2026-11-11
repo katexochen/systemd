@@ -174,6 +174,15 @@ jobs:
           EOF
           fi
 
+          # Pulls in qemu-coconut and the coconut-svsm firmware for TEST-94-COCO's SVSM subtests.
+          if [ "${{ matrix.coco || 0 }}" = 1 ]; then
+              tee -a mkosi/mkosi.local.conf <<EOF
+
+          [Config]
+          Profiles=coco
+          EOF
+          fi
+
       - name: Generate secure boot key
         run: mkosi --debug genkey
 
